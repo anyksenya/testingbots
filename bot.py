@@ -15,6 +15,7 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 import config
 from database import DatabaseManager
 from services import UserService, TaskService
+from handlers import ConversationHandlers
 
 # Enable logging
 logging.basicConfig(
@@ -27,6 +28,9 @@ logger = logging.getLogger(__name__)
 db_manager = DatabaseManager()
 user_service = UserService(db_manager)
 task_service = TaskService(db_manager)
+
+# Initialize conversation handlers
+conversation_handlers = ConversationHandlers(task_service, user_service)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
@@ -57,8 +61,10 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/start - Start the bot and register as a user\n"
         "/help - Show this help message\n"
         "/add_task - Add a new task for the current week\n"
+        "/add_task_conv - Add a new task using conversation flow\n"
         "/my_tasks - Show your tasks for the current week\n"
         "/update_task - Update the status of a task\n"
+        "/update_task_conv - Update task status using conversation flow\n"
         "/stats - Show your statistics for the current week\n"
         "/history - Show your historical weekly statistics"
     )
@@ -68,6 +74,17 @@ async def add_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Add a new task."""
     user = update.effective_user
     chat = update.effective_chat
+    
+    # Check for duplicate command execution
+    message_id = update.message.message_id
+    if hasattr(context, 'processed_messages') and message_id in context.processed_messages:
+        logger.info(f"Duplicate message detected: {message_id}")
+        return
+    
+    # Mark this message as processed
+    if not hasattr(context, 'processed_messages'):
+        context.processed_messages = set()
+    context.processed_messages.add(message_id)
     
     # Check if user can create a task
     result = task_service.can_create_task(user.id, chat.id)
@@ -122,7 +139,7 @@ async def my_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Create inline keyboard with buttons for each task
     keyboard = []
     for task in tasks:
-        task_text = f"Task {task.task_id}: {task.description[:20]}..." if len(task.description) > 20 else f"Task {task.task_id}: {task.description}"
+        task_text = f"{task.description[:30]}..." if len(task.description) > 30 else task.description
         keyboard.append([InlineKeyboardButton(task_text, callback_data=f"select_task:{task.task_id}")])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -190,6 +207,17 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle button clicks."""
     query = update.callback_query
+    
+    # Check if this callback query has already been processed
+    if hasattr(context, 'processed_callback_queries') and query.id in context.processed_callback_queries:
+        await query.answer("This action has already been processed.")
+        return
+    
+    # Mark this callback query as processed
+    if not hasattr(context, 'processed_callback_queries'):
+        context.processed_callback_queries = set()
+    context.processed_callback_queries.add(query.id)
+    
     await query.answer()
     
     # Get callback data
@@ -262,7 +290,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # Create inline keyboard with buttons for each task
         keyboard = []
         for task in tasks:
-            task_text = f"Task {task.task_id}: {task.description[:20]}..." if len(task.description) > 20 else f"Task {task.task_id}: {task.description}"
+            task_text = f"{task.description[:30]}..." if len(task.description) > 30 else task.description
             keyboard.append([InlineKeyboardButton(task_text, callback_data=f"select_task:{task.task_id}")])
         
         reply_markup = InlineKeyboardMarkup(keyboard)
@@ -275,10 +303,20 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log the error and send a message to the user."""
     logger.error(f"Error: {context.error} caused by {update}")
+    
+    # Check if this is an edited message error
+    if update and hasattr(update, 'edited_message') and update.edited_message:
+        # We don't need to respond to edited messages
+        return
+    
+    # For other errors, try to reply if possible
     if update and update.effective_message:
-        await update.effective_message.reply_text(
-            "Sorry, something went wrong. Please try again later."
-        )
+        try:
+            await update.effective_message.reply_text(
+                "Sorry, something went wrong. Please try again later."
+            )
+        except Exception as e:
+            logger.error(f"Failed to send error message: {e}")
 
 async def history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show user's historical weekly statistics."""
@@ -320,6 +358,10 @@ def main() -> None:
 
     # Register callback query handler for inline buttons
     application.add_handler(CallbackQueryHandler(button_callback))
+    
+    # Register conversation handlers
+    application.add_handler(conversation_handlers.get_add_task_handler())
+    application.add_handler(conversation_handlers.get_update_task_handler())
     
     # Register error handler
     application.add_error_handler(error_handler)
