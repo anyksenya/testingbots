@@ -12,7 +12,8 @@ from telegram.ext import Application, CommandHandler, ContextTypes
 from telegram import Update
 
 import config
-from database import DatabaseManager, User, Chat, UserChat, Task
+from database import DatabaseManager
+from services import UserService
 
 # Enable logging
 logging.basicConfig(
@@ -21,34 +22,25 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Initialize database manager
+# Initialize services
 db_manager = DatabaseManager()
+user_service = UserService(db_manager)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
     user = update.effective_user
     chat = update.effective_chat
     
-    # Register user in the database
-    db_user = User(
+    # Register user in the database using UserService
+    success = user_service.register_user(
         user_id=user.id,
         username=user.username,
         first_name=user.first_name,
-        last_name=user.last_name
-    )
-    
-    db_chat = Chat(
+        last_name=user.last_name,
         chat_id=chat.id,
-        title=chat.title if chat.title else f"{user.first_name}'s chat",
+        chat_title=chat.title,
         chat_type=chat.type
     )
-    
-    success = db_manager.register_user_in_chat(db_user, db_chat)
-    
-    if success:
-        logger.info(f"User {user.id} registered in chat {chat.id}")
-    else:
-        logger.error(f"Failed to register user {user.id} in chat {chat.id}")
     
     await update.message.reply_text(
         f'Hi {user.first_name}! I am your Task Management Bot.\n\n'
