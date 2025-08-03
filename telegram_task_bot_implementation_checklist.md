@@ -51,19 +51,19 @@
 - [x] Implement user profile management
 - [x] Test user registration flow
 
-## Phase 5: Task Management
+## Phase 5: Task Management ✅
 
-- [ ] Create task service module
-- [ ] Implement task creation functionality
-  - [ ] Task description input
-  - [ ] Task validation (3-5 tasks limit)
-- [ ] Implement task listing functionality
-- [ ] Implement task status update functionality
-  - [ ] Mark as completed
-  - [ ] Mark as canceled
-- [ ] Create task status validation
-- [ ] Implement task filtering by week
-- [ ] Test task management flows
+- [x] Create task service module
+- [x] Implement task creation functionality
+  - [x] Task description input
+  - [x] Task validation (3-5 tasks limit)
+- [x] Implement task listing functionality
+- [x] Implement task status update functionality
+  - [x] Mark as completed
+  - [x] Mark as canceled
+- [x] Create task status validation
+- [x] Implement task filtering by week
+- [x] Test task management flows
 
 ## Phase 6: Command Handlers
 

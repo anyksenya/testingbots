@@ -8,12 +8,13 @@ A bot that helps users manage their weekly tasks.
 
 import logging
 import sys
-from telegram.ext import Application, CommandHandler, ContextTypes
-from telegram import Update
+import json
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 
 import config
 from database import DatabaseManager
-from services import UserService
+from services import UserService, TaskService
 
 # Enable logging
 logging.basicConfig(
@@ -25,6 +26,7 @@ logger = logging.getLogger(__name__)
 # Initialize services
 db_manager = DatabaseManager()
 user_service = UserService(db_manager)
+task_service = TaskService(db_manager)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
@@ -62,6 +64,214 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     )
     await update.message.reply_text(help_text)
 
+async def add_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Add a new task."""
+    user = update.effective_user
+    chat = update.effective_chat
+    
+    # Check if user can create a task
+    result = task_service.can_create_task(user.id, chat.id)
+    
+    if not result.get('can_create', False):
+        await update.message.reply_text(
+            f"Sorry, you cannot create a task: {result.get('reason', 'Unknown reason')}"
+        )
+        return
+    
+    # Get task description from command arguments
+    if not context.args or not ' '.join(context.args).strip():
+        await update.message.reply_text(
+            "Please provide a task description. Example: /add_task Buy groceries"
+        )
+        return
+    
+    description = ' '.join(context.args)
+    
+    # Create task
+    task_id = task_service.create_task(user.id, chat.id, description)
+    
+    if task_id:
+        min_tasks_remaining = result.get('min_tasks_remaining', 0)
+        if min_tasks_remaining > 0:
+            await update.message.reply_text(
+                f"Task created successfully! You need to create at least {min_tasks_remaining} more task(s) this week."
+            )
+        else:
+            await update.message.reply_text("Task created successfully!")
+    else:
+        await update.message.reply_text("Failed to create task. Please try again later.")
+
+async def my_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show user's tasks for the current week with inline buttons to update status."""
+    user = update.effective_user
+    chat = update.effective_chat
+    
+    # Get tasks for current week
+    tasks = task_service.get_user_tasks(user.id, chat.id)
+    
+    if not tasks:
+        await update.message.reply_text("You don't have any tasks for this week.")
+        return
+    
+    # Format tasks
+    tasks_text = "Your tasks for this week:\n\n"
+    for i, task in enumerate(tasks, 1):
+        status_emoji = "🆕" if task.status == config.TASK_STATUS['CREATED'] else "✅" if task.status == config.TASK_STATUS['COMPLETED'] else "❌"
+        tasks_text += f"{i}. {status_emoji} {task.description} (ID: {task.task_id})\n"
+    
+    # Create inline keyboard with buttons for each task
+    keyboard = []
+    for task in tasks:
+        task_text = f"Task {task.task_id}: {task.description[:20]}..." if len(task.description) > 20 else f"Task {task.task_id}: {task.description}"
+        keyboard.append([InlineKeyboardButton(task_text, callback_data=f"select_task:{task.task_id}")])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        tasks_text + "\nSelect a task to update its status:",
+        reply_markup=reply_markup
+    )
+
+async def update_task_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Update a task's status."""
+    if not context.args or len(context.args) < 2:
+        await update.message.reply_text(
+            "Please provide a task ID and status. Example: /update_task 1 completed"
+        )
+        return
+    
+    try:
+        task_id = int(context.args[0])
+        status = context.args[1].lower()
+    except (ValueError, IndexError):
+        await update.message.reply_text("Invalid task ID or status.")
+        return
+    
+    # Validate status
+    if status not in config.TASK_STATUS.values():
+        valid_statuses = ", ".join(config.TASK_STATUS.values())
+        await update.message.reply_text(f"Invalid status. Valid statuses are: {valid_statuses}")
+        return
+    
+    # Update task status
+    success = task_service.update_task_status(task_id, status)
+    
+    if success:
+        await update.message.reply_text(f"Task status updated to {status}.")
+    else:
+        await update.message.reply_text("Failed to update task status. Please check the task ID and try again.")
+
+async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show user's statistics for the current week."""
+    user = update.effective_user
+    chat = update.effective_chat
+    
+    # Get task statistics
+    stats = task_service.get_task_stats(user.id, chat.id)
+    
+    if not stats:
+        await update.message.reply_text("Failed to get statistics. Please try again later.")
+        return
+    
+    # Format statistics
+    stats_text = "Your task statistics for this week:\n\n"
+    stats_text += f"Total tasks: {stats['total_tasks']}/{stats['max_tasks']}\n"
+    stats_text += f"Completed tasks: {stats['completed_tasks']}\n"
+    stats_text += f"Canceled tasks: {stats['canceled_tasks']}\n"
+    stats_text += f"Pending tasks: {stats['created_tasks']}\n"
+    stats_text += f"Completion rate: {stats['completion_rate'] * 100:.1f}%\n"
+    
+    if stats['total_tasks'] < stats['min_tasks']:
+        remaining = stats['min_tasks'] - stats['total_tasks']
+        stats_text += f"\nYou need to create at least {remaining} more task(s) this week."
+    
+    await update.message.reply_text(stats_text)
+
+async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle button clicks."""
+    query = update.callback_query
+    await query.answer()
+    
+    # Get callback data
+    data = query.data
+    
+    if data.startswith("select_task:"):
+        # Extract task ID
+        task_id = int(data.split(":")[1])
+        
+        # Get task
+        task = task_service.get_task(task_id)
+        if not task:
+            await query.edit_message_text(f"Task {task_id} not found.")
+            return
+        
+        # Show task details and status options
+        task_text = f"Task: {task.description}\nCurrent status: {task.status}\n\nSelect new status:"
+        
+        # Create inline keyboard with status options
+        keyboard = []
+        for status in config.TASK_STATUS.values():
+            if status != task.status:  # Don't show current status as an option
+                keyboard.append([InlineKeyboardButton(
+                    f"Mark as {status}",
+                    callback_data=f"update_status:{task_id}:{status}"
+                )])
+        
+        # Add cancel button
+        keyboard.append([InlineKeyboardButton("Cancel", callback_data="cancel")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            text=task_text,
+            reply_markup=reply_markup
+        )
+    
+    elif data.startswith("update_status:"):
+        # Extract task ID and new status
+        parts = data.split(":")
+        task_id = int(parts[1])
+        new_status = parts[2]
+        
+        # Update task status
+        success = task_service.update_task_status(task_id, new_status)
+        
+        if success:
+            await query.edit_message_text(f"Task {task_id} status updated to {new_status}.")
+        else:
+            await query.edit_message_text(f"Failed to update task {task_id} status.")
+    
+    elif data == "cancel":
+        # Get user and chat
+        user = update.effective_user
+        chat = update.callback_query.message.chat
+        
+        # Get tasks for current week
+        tasks = task_service.get_user_tasks(user.id, chat.id)
+        
+        if not tasks:
+            await query.edit_message_text("You don't have any tasks for this week.")
+            return
+        
+        # Format tasks
+        tasks_text = "Your tasks for this week:\n\n"
+        for i, task in enumerate(tasks, 1):
+            status_emoji = "🆕" if task.status == config.TASK_STATUS['CREATED'] else "✅" if task.status == config.TASK_STATUS['COMPLETED'] else "❌"
+            tasks_text += f"{i}. {status_emoji} {task.description} (ID: {task.task_id})\n"
+        
+        # Create inline keyboard with buttons for each task
+        keyboard = []
+        for task in tasks:
+            task_text = f"Task {task.task_id}: {task.description[:20]}..." if len(task.description) > 20 else f"Task {task.task_id}: {task.description}"
+            keyboard.append([InlineKeyboardButton(task_text, callback_data=f"select_task:{task.task_id}")])
+        
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(
+            tasks_text + "\nSelect a task to update its status:",
+            reply_markup=reply_markup
+        )
+
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log the error and send a message to the user."""
     logger.error(f"Error: {context.error} caused by {update}")
@@ -69,6 +279,30 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.effective_message.reply_text(
             "Sorry, something went wrong. Please try again later."
         )
+
+async def history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show user's historical weekly statistics."""
+    user = update.effective_user
+    chat = update.effective_chat
+    
+    # Get weekly stats from database (limit to last 10 weeks)
+    weekly_stats = db_manager.get_user_stats_history_in_chat(user.id, chat.id, limit=10)
+    
+    if not weekly_stats:
+        await update.message.reply_text("You don't have any historical statistics yet.")
+        return
+    
+    # Format statistics
+    history_text = "Your historical weekly statistics:\n\n"
+    
+    for stat in weekly_stats:
+        history_text += f"Week {stat.week_number}, {stat.year}:\n"
+        history_text += f"  Total tasks: {stat.tasks_created}\n"
+        history_text += f"  Completed: {stat.tasks_completed}\n"
+        history_text += f"  Canceled: {stat.tasks_canceled}\n"
+        history_text += f"  Completion rate: {stat.completion_rate * 100:.1f}%\n\n"
+    
+    await update.message.reply_text(history_text)
 
 def main() -> None:
     """Start the bot."""
@@ -78,7 +312,15 @@ def main() -> None:
     # Register command handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("help", help_command))
+    application.add_handler(CommandHandler("add_task", add_task))
+    application.add_handler(CommandHandler("my_tasks", my_tasks))
+    application.add_handler(CommandHandler("update_task", update_task_status))
+    application.add_handler(CommandHandler("stats", stats))
+    application.add_handler(CommandHandler("history", history))
 
+    # Register callback query handler for inline buttons
+    application.add_handler(CallbackQueryHandler(button_callback))
+    
     # Register error handler
     application.add_error_handler(error_handler)
 
