@@ -245,6 +245,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
                     callback_data=f"update_status:{task_id}:{status}"
                 )])
         
+        # Add delete button
+        keyboard.append([InlineKeyboardButton("🗑️ Delete task", callback_data=f"delete_task:{task_id}")])
+        
         # Add cancel button
         keyboard.append([InlineKeyboardButton("Cancel", callback_data="cancel")])
         
@@ -268,6 +271,18 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
             await query.edit_message_text(f"Task {task_id} status updated to {new_status}.")
         else:
             await query.edit_message_text(f"Failed to update task {task_id} status.")
+    
+    elif data.startswith("delete_task:"):
+        # Extract task ID
+        task_id = int(data.split(":")[1])
+        
+        # Delete task
+        success = task_service.delete_task(task_id)
+        
+        if success:
+            await query.edit_message_text(f"Task {task_id} has been deleted.")
+        else:
+            await query.edit_message_text(f"Failed to delete task {task_id}.")
     
     elif data == "cancel":
         # Get user and chat

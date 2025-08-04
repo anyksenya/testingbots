@@ -60,7 +60,8 @@ class ConversationHandlers:
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.update_task_id_input)
                 ],
                 SELECTING_STATUS: [
-                    CallbackQueryHandler(self.update_task_status, pattern=r"^update_status:\d+:[a-z]+$")
+                    CallbackQueryHandler(self.update_task_status, pattern=r"^update_status:\d+:[a-z]+$"),
+                    CallbackQueryHandler(self.delete_task, pattern=r"^delete_task:\d+$")
                 ],
             },
             fallbacks=[
@@ -209,6 +210,9 @@ class ConversationHandlers:
                     callback_data=f"update_status:{task.task_id}:{status}"
                 )])
         
+        # Add delete button
+        keyboard.append([InlineKeyboardButton("🗑️ Delete task", callback_data=f"delete_task:{task.task_id}")])
+        
         # Add cancel button
         keyboard.append([InlineKeyboardButton("Cancel", callback_data="cancel")])
         
@@ -244,6 +248,24 @@ class ConversationHandlers:
             await query.edit_message_text(f"Task {task_id} status updated to {new_status}.")
         else:
             await query.edit_message_text(f"Failed to update task {task_id} status.")
+        
+        return ConversationHandler.END
+    
+    async def delete_task(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+        """Delete task."""
+        query = update.callback_query
+        await query.answer()
+        
+        # Extract task ID
+        task_id = int(query.data.split(":")[1])
+        
+        # Delete task
+        success = self.task_service.delete_task(task_id)
+        
+        if success:
+            await query.edit_message_text(f"Task {task_id} has been deleted.")
+        else:
+            await query.edit_message_text(f"Failed to delete task {task_id}.")
         
         return ConversationHandler.END
     

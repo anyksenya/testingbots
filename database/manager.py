@@ -481,6 +481,22 @@ class DatabaseManager:
         finally:
             self._disconnect()
     
+    def delete_task(self, task_id: int) -> bool:
+        """Delete a task by ID."""
+        try:
+            self._connect()
+            self.cursor.execute(
+                "DELETE FROM tasks WHERE task_id = ?",
+                (task_id,)
+            )
+            self.conn.commit()
+            return self.cursor.rowcount > 0
+        except sqlite3.Error as e:
+            logger.error(f"Error deleting task {task_id}: {e}")
+            return False
+        finally:
+            self._disconnect()
+    
     def count_user_tasks_in_chat(self, user_id: int, chat_id: int, week_number: int, year: int) -> int:
         """Count the number of tasks for a user in a specific chat and week."""
         try:
