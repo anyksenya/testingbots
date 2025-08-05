@@ -468,42 +468,138 @@ async def handle_conversation_fallback(update: Update, context: ContextTypes.DEF
     
     logger.info(f"Fallback handler received message from user {user.id} in chat {chat.id}: {message_text}")
     
-    # Check if user has active conversation data
-    if context.user_data and 'active_conversation' in context.user_data:
-        active_conversation = context.user_data.get('active_conversation')
-        active_chat_id = context.user_data.get('active_chat_id')
-        
-        logger.info(f"User {user.id} has active conversation: {active_conversation} in chat {active_chat_id}")
-        
-        # Handle add_task conversation
-        if active_conversation == 'add_task':
-            logger.info(f"Creating task via fallback handler for user {user.id} in chat {active_chat_id}")
+    # For private chats, use the standard approach
+    if chat.type == 'private':
+        # Check if user has active conversation data
+        if context.user_data and 'active_conversation' in context.user_data:
+            active_conversation = context.user_data.get('active_conversation')
+            active_chat_id = context.user_data.get('active_chat_id')
             
-            # Create task
-            task_id = task_service.create_task(user.id, active_chat_id, message_text)
+            logger.info(f"User {user.id} has active conversation: {active_conversation} in chat {active_chat_id}")
             
-            if task_id:
-                # Check if user needs to create more tasks
-                result = task_service.can_create_task(user.id, chat.id)
-                min_tasks_remaining = result.get('min_tasks_remaining', 0)
+            # Handle add_task conversation
+            if active_conversation == 'add_task':
+                logger.info(f"Creating task via fallback handler for user {user.id} in chat {active_chat_id}")
                 
-                if min_tasks_remaining > 0:
-                    await update.message.reply_text(
-                        f"Task created successfully! You need to create at least {min_tasks_remaining} more task(s) this week."
-                    )
+                # Create task - use active_chat_id from user_data, not the current chat.id
+                task_id = task_service.create_task(user.id, active_chat_id, message_text)
+                
+                if task_id:
+                    # Check if user needs to create more tasks
+                    result = task_service.can_create_task(user.id, active_chat_id)
+                    min_tasks_remaining = result.get('min_tasks_remaining', 0)
+                    
+                    if min_tasks_remaining > 0:
+                        await update.message.reply_text(
+                            f"Task created successfully! You need to create at least {min_tasks_remaining} more task(s) this week."
+                        )
+                    else:
+                        await update.message.reply_text("Task created successfully!")
+                    
+                    # Clear conversation state
+                    if 'active_chat_id' in context.user_data:
+                        del context.user_data['active_chat_id']
+                    if 'active_conversation' in context.user_data:
+                        del context.user_data['active_conversation']
+                    
+                    logger.info(f"Task created successfully via fallback handler: {task_id}")
+                    return
                 else:
-                    await update.message.reply_text("Task created successfully!")
+                    await update.message.reply_text("Failed to create task. Please try again later.")
+                    logger.error(f"Failed to create task via fallback handler for user {user.id}")
+                    return
+    
+    # Special handling for group chats - this is our main approach for group chats
+    elif chat.type in ['group', 'supergroup']:
+        # Check if user has active conversation data
+        if context.user_data and 'active_conversation' in context.user_data:
+            active_conversation = context.user_data.get('active_conversation')
+            active_chat_id = context.user_data.get('active_chat_id')
+            
+            # Only process if the active chat matches the current chat
+            if active_chat_id == chat.id:
+                logger.info(f"Group chat: User {user.id} has active conversation: {active_conversation} in chat {active_chat_id}")
                 
-                # Clear conversation state
-                if 'active_chat_id' in context.user_data:
-                    del context.user_data['active_chat_id']
-                if 'active_conversation' in context.user_data:
-                    del context.user_data['active_conversation']
+                # Handle add_task conversation
+                if active_conversation == 'add_task':
+                    logger.info(f"Group chat: Creating task for user {user.id} in chat {active_chat_id}")
+                    
+                    # Create task
+                    task_id = task_service.create_task(user.id, active_chat_id, message_text)
+                    
+                    if task_id:
+                        # Check if user needs to create more tasks
+                        result = task_service.can_create_task(user.id, active_chat_id)
+                        min_tasks_remaining = result.get('min_tasks_remaining', 0)
+                        
+                        if min_tasks_remaining > 0:
+                            await update.message.reply_text(
+                                f"Task created successfully! You need to create at least {min_tasks_remaining} more task(s) this week."
+                            )
+                        else:
+                            await update.message.reply_text("Task created successfully!")
+                        
+                        # Clear conversation state
+                        if 'active_chat_id' in context.user_data:
+                            del context.user_data['active_chat_id']
+                        if 'active_conversation' in context.user_data:
+                            del context.user_data['active_conversation']
+                        
+                        logger.info(f"Group chat: Task created successfully: {task_id}")
+                        return
+                    else:
+                        await update.message.reply_text("Failed to create task. Please try again later.")
+                        logger.error(f"Group chat: Failed to create task for user {user.id}")
+                        return
                 
-                return
-            else:
-                await update.message.reply_text("Failed to create task. Please try again later.")
-                return
+                # Handle update_task conversation
+                elif active_conversation == 'update_task':
+                    logger.info(f"Group chat: Processing update_task input for user {user.id}")
+                    
+                    try:
+                        # Try to parse the message as a task ID
+                        task_id = int(message_text.strip())
+                        
+                        # Get task
+                        task = task_service.get_task(task_id)
+                        if not task:
+                            await update.message.reply_text("Task not found. Please try again.")
+                            return
+                        
+                        # Show task details and status options
+                        task_text = f"Task: {task.description}\nCurrent status: {task.status}\n\nSelect new status:"
+                        
+                        # Create inline keyboard with status options
+                        keyboard = []
+                        for status in config.TASK_STATUS.values():
+                            if status != task.status:  # Don't show current status as an option
+                                keyboard.append([InlineKeyboardButton(
+                                    f"Mark as {status}",
+                                    callback_data=f"update_status:{task.task_id}:{status}"
+                                )])
+                        
+                        # Add delete button
+                        keyboard.append([InlineKeyboardButton("🗑️ Delete task", callback_data=f"delete_task:{task.task_id}")])
+                        
+                        # Add cancel button
+                        keyboard.append([InlineKeyboardButton("Cancel", callback_data="cancel")])
+                        
+                        reply_markup = InlineKeyboardMarkup(keyboard)
+                        
+                        await update.message.reply_text(
+                            text=task_text,
+                            reply_markup=reply_markup
+                        )
+                        
+                        # Update conversation state
+                        context.user_data['update_task_state'] = 'SELECTING_STATUS'
+                        
+                        logger.info(f"Group chat: Showed status options for task {task_id}")
+                        return
+                        
+                    except ValueError:
+                        await update.message.reply_text("Invalid task ID. Please enter a number.")
+                        return
 
 async def history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show user's historical weekly statistics with pagination."""
@@ -599,10 +695,11 @@ def main() -> None:
     application.add_handler(conversation_handlers.get_update_task_handler())
     
     # Add a fallback message handler for group chat conversations
+    # This should be added AFTER conversation handlers but BEFORE other message handlers
     application.add_handler(MessageHandler(
         filters.TEXT & ~filters.COMMAND,
         handle_conversation_fallback
-    ))
+    ), group=999)  # Use a very high group number to ensure it runs as a last resort
     
     # Register error handler
     application.add_error_handler(error_handler)

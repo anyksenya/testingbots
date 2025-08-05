@@ -43,16 +43,20 @@ class ConversationHandlers:
             states={
                 TASK_DESCRIPTION: [
                     # Accept any text message that's not a command
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.add_task_description)
+                    MessageHandler(
+                        filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
+                        self.add_task_description
+                    )
                 ],
             },
             fallbacks=[CommandHandler("cancel", self.cancel_conversation)],
             name="add_task_conversation",
             persistent=False,
-            per_chat=False,
-            per_user=True,
+            per_chat=False,  # Track conversation per user, not per chat
+            per_user=True,   # This is critical for group chats
             per_message=False,
             allow_reentry=True,  # Allow users to restart the conversation
+            conversation_timeout=300,  # Timeout after 5 minutes of inactivity
         )
     
     def get_update_task_handler(self) -> ConversationHandler:
@@ -62,7 +66,10 @@ class ConversationHandlers:
             states={
                 SELECTING_TASK: [
                     CallbackQueryHandler(self.select_task, pattern=r"^select_task:\d+$"),
-                    MessageHandler(filters.TEXT & ~filters.COMMAND, self.update_task_id_input)
+                    MessageHandler(
+                        filters.TEXT & ~filters.COMMAND & filters.ChatType.PRIVATE,
+                        self.update_task_id_input
+                    )
                 ],
                 SELECTING_STATUS: [
                     CallbackQueryHandler(self.update_task_status, pattern=r"^update_status:\d+:[a-z]+$"),
@@ -75,9 +82,11 @@ class ConversationHandlers:
             ],
             name="update_task_conversation",
             persistent=False,
-            per_chat=False,
-            per_user=True,
+            per_chat=False,  # Track conversation per user, not per chat
+            per_user=True,   # This is critical for group chats
             per_message=False,
+            allow_reentry=True,  # Allow users to restart the conversation
+            conversation_timeout=300,  # Timeout after 5 minutes of inactivity
         )
     
     async def add_task_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -107,10 +116,18 @@ class ConversationHandlers:
         
         logger.info(f"User data set: {context.user_data}")
         
-        await update.message.reply_text(
-            "Please enter a description for your task.\n"
-            "Send /cancel to cancel the operation."
-        )
+        # Different instructions based on chat type
+        if chat.type in ['group', 'supergroup']:
+            await update.message.reply_text(
+                "Please enter a description for your task.\n"
+                "⚠️ In group chats, you must REPLY DIRECTLY to this message for your task to be added correctly.\n"
+                "Send /cancel to cancel the operation."
+            )
+        else:
+            await update.message.reply_text(
+                "Please enter a description for your task.\n"
+                "Send /cancel to cancel the operation."
+            )
         
         return TASK_DESCRIPTION
     
@@ -135,7 +152,7 @@ class ConversationHandlers:
         
         if task_id:
             # Check if user needs to create more tasks
-            result = self.task_service.can_create_task(user.id, chat.id)
+            result = self.task_service.can_create_task(user.id, active_chat_id)
             min_tasks_remaining = result.get('min_tasks_remaining', 0)
             
             if min_tasks_remaining > 0:
@@ -199,10 +216,18 @@ class ConversationHandlers:
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(
-            tasks_text + "\nSelect a task to update its status or enter a task ID:",
-            reply_markup=reply_markup
-        )
+        # Different instructions based on chat type
+        if chat.type in ['group', 'supergroup']:
+            await update.message.reply_text(
+                tasks_text + "\nSelect a task to update its status or enter a task ID:\n"
+                "⚠️ In group chats, if entering a task ID, you must REPLY DIRECTLY to this message.",
+                reply_markup=reply_markup
+            )
+        else:
+            await update.message.reply_text(
+                tasks_text + "\nSelect a task to update its status or enter a task ID:",
+                reply_markup=reply_markup
+            )
         
         return SELECTING_TASK
     
