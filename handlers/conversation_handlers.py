@@ -50,6 +50,7 @@ class ConversationHandlers:
             persistent=False,
             per_chat=False,
             per_user=True,
+            per_message=False,
         )
     
     def get_update_task_handler(self) -> ConversationHandler:
@@ -74,12 +75,15 @@ class ConversationHandlers:
             persistent=False,
             per_chat=False,
             per_user=True,
+            per_message=False,
         )
     
     async def add_task_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Start the add task conversation."""
         user = update.effective_user
         chat = update.effective_chat
+        
+        logger.info(f"Starting add_task conversation for user {user.id} in chat {chat.id} (type: {chat.type})")
         
         # Check if user can create a task
         result = self.task_service.can_create_task(user.id, chat.id)
@@ -89,6 +93,16 @@ class ConversationHandlers:
                 f"Sorry, you cannot create a task: {result.get('reason', 'Unknown reason')}"
             )
             return ConversationHandler.END
+        
+        # Store user and chat info in context for later use
+        if not context.user_data:
+            context.user_data = {}
+        context.user_data.update({
+            'active_chat_id': chat.id,
+            'active_conversation': 'add_task'
+        })
+        
+        logger.info(f"User data set: {context.user_data}")
         
         await update.message.reply_text(
             "Please enter a description for your task.\n"
@@ -103,8 +117,14 @@ class ConversationHandlers:
         chat = update.effective_chat
         description = update.message.text
         
+        logger.info(f"Received task description from user {user.id} in chat {chat.id}: {description}")
+        logger.info(f"User data: {context.user_data}")
+        
+        # Get the active chat ID from context if available
+        active_chat_id = context.user_data.get('active_chat_id', chat.id) if context.user_data else chat.id
+        
         # Create task
-        task_id = self.task_service.create_task(user.id, chat.id, description)
+        task_id = self.task_service.create_task(user.id, active_chat_id, description)
         
         if task_id:
             # Check if user needs to create more tasks
@@ -134,6 +154,18 @@ class ConversationHandlers:
         """Start the update task conversation."""
         user = update.effective_user
         chat = update.effective_chat
+        
+        logger.info(f"Starting update_task conversation for user {user.id} in chat {chat.id} (type: {chat.type})")
+        
+        # Store user and chat info in context for later use
+        if not context.user_data:
+            context.user_data = {}
+        context.user_data.update({
+            'active_chat_id': chat.id,
+            'active_conversation': 'update_task'
+        })
+        
+        logger.info(f"User data set: {context.user_data}")
         
         # Get tasks for current week
         tasks = self.task_service.get_user_tasks(user.id, chat.id)
@@ -168,6 +200,12 @@ class ConversationHandlers:
     
     async def update_task_id_input(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Process task ID input."""
+        user = update.effective_user
+        chat = update.effective_chat
+        
+        logger.info(f"Received task ID input from user {user.id} in chat {chat.id}: {update.message.text}")
+        logger.info(f"User data: {context.user_data}")
+        
         try:
             task_id = int(update.message.text.strip())
             
@@ -187,6 +225,11 @@ class ConversationHandlers:
     async def select_task(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Process task selection."""
         query = update.callback_query
+        user = update.effective_user
+        
+        logger.info(f"Task selection callback from user {user.id}: {query.data}")
+        logger.info(f"User data: {context.user_data}")
+        
         await query.answer()
         
         # Extract task ID
@@ -275,10 +318,21 @@ class ConversationHandlers:
     
     async def cancel_conversation(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         """Cancel the conversation."""
+        user = update.effective_user
+        
+        logger.info(f"Canceling conversation for user {user.id}")
+        logger.info(f"User data before cancellation: {context.user_data}")
+        
+        # Clear conversation state
+        if context.user_data:
+            context.user_data.pop('active_chat_id', None)
+            context.user_data.pop('active_conversation', None)
+        
         if update.callback_query:
             await update.callback_query.edit_message_text("Operation canceled.")
         else:
             await update.message.reply_text("Operation canceled.")
+        
         return ConversationHandler.END
     
     async def handle_callback_query(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
