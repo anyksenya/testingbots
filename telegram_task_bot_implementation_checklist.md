@@ -61,6 +61,7 @@
 - [x] Implement task status update functionality
   - [x] Mark as completed
   - [x] Mark as canceled
+- [x] Implement task deletion functionality
 - [x] Create task status validation
 - [x] Implement task filtering by week
 - [x] Test task management flows
@@ -85,16 +86,16 @@
 - [x] Create fallback handlers for conversation cancellation
 - [x] Test conversation flows
 
-## Phase 8: Scheduling and Statistics
+## Phase 8: Scheduling and Statistics ✅
 
-- [ ] Create scheduler module
-- [ ] Implement weekly task reset (Monday 00:00 UTC+3)
-- [ ] Create statistics service module
-- [ ] Implement weekly statistics generation (Friday 17:00 UTC+3)
-- [ ] Create statistics report formatting
-- [ ] Implement historical statistics storage
-- [ ] Test scheduling functionality
-- [ ] Test statistics generation
+- [x] Create scheduler module
+- [x] Implement weekly task reset (Monday 00:00 UTC+3)
+- [x] Create statistics service module
+- [x] Implement weekly statistics generation (Friday 17:00 UTC+3)
+- [x] Create statistics report formatting
+- [x] Implement historical statistics storage
+- [x] Test scheduling functionality
+- [x] Test statistics generation
 
 ## Phase 9: User Interface Improvements
 
@@ -102,6 +103,7 @@
 - [x] Implement callback query handlers
 - [x] Create formatted messages for task lists
 - [x] Create formatted messages for statistics
+- [x] Add delete task button to task management UI
 - [ ] Implement pagination for long lists
 - [x] Add emoji and formatting to improve readability
 - [x] Test UI components

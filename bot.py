@@ -9,13 +9,15 @@ A bot that helps users manage their weekly tasks.
 import logging
 import sys
 import json
+import datetime
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 
 import config
 from database import DatabaseManager
-from services import UserService, TaskService
+from services import UserService, TaskService, StatisticsService
 from handlers import ConversationHandlers
+from utils import TaskScheduler
 
 # Enable logging
 logging.basicConfig(
@@ -28,9 +30,13 @@ logger = logging.getLogger(__name__)
 db_manager = DatabaseManager()
 user_service = UserService(db_manager)
 task_service = TaskService(db_manager)
+statistics_service = StatisticsService(db_manager)
 
 # Initialize conversation handlers
 conversation_handlers = ConversationHandlers(task_service, user_service)
+
+# Initialize scheduler
+scheduler = TaskScheduler()
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Send a message when the command /start is issued."""
@@ -66,6 +72,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         "/update_task - Update the status of a task\n"
         "/update_task_conv - Update task status using conversation flow\n"
         "/stats - Show your statistics for the current week\n"
+        "/stats_chat - Show completion rates for all users in the chat\n"
         "/history - Show your historical weekly statistics"
     )
     await update.message.reply_text(help_text)
@@ -130,24 +137,70 @@ async def my_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         await update.message.reply_text("You don't have any tasks for this week.")
         return
     
+    # Get page number from context or use default
+    page = 1
+    if context.user_data and 'task_page' in context.user_data:
+        page = context.user_data['task_page']
+    
+    # Handle page navigation from callback
+    if update.callback_query and update.callback_query.data.startswith("page:"):
+        page = int(update.callback_query.data.split(":")[1])
+        if not hasattr(context, 'user_data') or context.user_data is None:
+            context.user_data = {}
+        # Use dict.update() method to modify user_data
+        context.user_data.update({'task_page': page})
+        await update.callback_query.answer()
+    
+    # Calculate pagination
+    items_per_page = 5  # Standard number of items per page
+    total_pages = (len(tasks) + items_per_page - 1) // items_per_page
+    page = max(1, min(page, total_pages))  # Ensure page is within valid range
+    
+    # Debug logging
+    logger.info(f"Tasks pagination: {len(tasks)} tasks, {items_per_page} per page, {total_pages} total pages, current page {page}")
+    
+    # Get tasks for current page
+    start_idx = (page - 1) * items_per_page
+    end_idx = min(start_idx + items_per_page, len(tasks))
+    current_page_tasks = tasks[start_idx:end_idx]
+    
     # Format tasks
-    tasks_text = "Your tasks for this week:\n\n"
-    for i, task in enumerate(tasks, 1):
+    tasks_text = f"Your tasks for this week (Page {page}/{total_pages}):\n\n"
+    for i, task in enumerate(current_page_tasks, start_idx + 1):
         status_emoji = "🆕" if task.status == config.TASK_STATUS['CREATED'] else "✅" if task.status == config.TASK_STATUS['COMPLETED'] else "❌"
-        tasks_text += f"{i}. {status_emoji} {task.description} (ID: {task.task_id})\n"
+        tasks_text += f"{i}. {status_emoji} {task.description}\n"
     
     # Create inline keyboard with buttons for each task
     keyboard = []
-    for task in tasks:
+    for task in current_page_tasks:
         task_text = f"{task.description[:30]}..." if len(task.description) > 30 else task.description
         keyboard.append([InlineKeyboardButton(task_text, callback_data=f"select_task:{task.task_id}")])
     
+    # Add pagination navigation buttons
+    nav_buttons = []
+    if page > 1:
+        nav_buttons.append(InlineKeyboardButton("◀️ Previous", callback_data=f"page:{page-1}"))
+    if page < total_pages:
+        nav_buttons.append(InlineKeyboardButton("Next ▶️", callback_data=f"page:{page+1}"))
+    
+    # Always add navigation buttons if there are multiple pages
+    if total_pages > 1:
+        keyboard.append(nav_buttons)
+        logger.info(f"Adding pagination buttons: {nav_buttons}")
+    
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await update.message.reply_text(
-        tasks_text + "\nSelect a task to update its status:",
-        reply_markup=reply_markup
-    )
+    # Send or edit message based on context
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            text=tasks_text + "\nSelect a task to update its status:",
+            reply_markup=reply_markup
+        )
+    else:
+        await update.message.reply_text(
+            tasks_text + "\nSelect a task to update its status:",
+            reply_markup=reply_markup
+        )
 
 async def update_task_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Update a task's status."""
@@ -183,6 +236,14 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     user = update.effective_user
     chat = update.effective_chat
     
+    # Generate current statistics for the user
+    now = datetime.datetime.now()
+    week_number = now.isocalendar()[1]
+    year = now.year
+    
+    # Ensure we have the latest statistics
+    statistics_service.generate_weekly_stats_for_chat(chat.id)
+    
     # Get task statistics
     stats = task_service.get_task_stats(user.id, chat.id)
     
@@ -203,6 +264,76 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         stats_text += f"\nYou need to create at least {remaining} more task(s) this week."
     
     await update.message.reply_text(stats_text)
+
+async def stats_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Show statistics for all users in the chat with pagination."""
+    chat = update.effective_chat
+    
+    # Generate current statistics for the chat
+    statistics_service.generate_weekly_stats_for_chat(chat.id)
+    
+    # Get chat completion rates
+    completion_rates = statistics_service.get_chat_users_completion_rates(chat.id)
+    
+    if not completion_rates:
+        await update.message.reply_text("No statistics available for this chat.")
+        return
+    
+    # Get page number from context or use default
+    page = context.user_data.get('stats_chat_page', 1) if context.user_data else 1
+    
+    # Handle page navigation from callback
+    if update.callback_query and update.callback_query.data.startswith("stats_chat_page:"):
+        page = int(update.callback_query.data.split(":")[1])
+        context.user_data['stats_chat_page'] = page
+        await update.callback_query.answer()
+    
+    # Calculate pagination
+    items_per_page = 5  # Show 5 users per page
+    total_pages = (len(completion_rates) + items_per_page - 1) // items_per_page
+    page = max(1, min(page, total_pages))  # Ensure page is within valid range
+    
+    # Get stats for current page
+    start_idx = (page - 1) * items_per_page
+    end_idx = min(start_idx + items_per_page, len(completion_rates))
+    current_page_rates = completion_rates[start_idx:end_idx]
+    
+    # Format statistics
+    now = datetime.datetime.now()
+    week_number = now.isocalendar()[1]
+    year = now.year
+    
+    stats_text = f"📊 Chat Completion Rates (Week {week_number}, {year}) - Page {page}/{total_pages}:\n\n"
+    
+    for _, username, completion_rate in current_page_rates:
+        stats_text += f"{username}: {completion_rate * 100:.1f}%\n"
+    
+    # Create pagination navigation buttons
+    keyboard = []
+    nav_buttons = []
+    
+    if page > 1:
+        nav_buttons.append(InlineKeyboardButton("◀️ Previous", callback_data=f"stats_chat_page:{page-1}"))
+    if page < total_pages:
+        nav_buttons.append(InlineKeyboardButton("Next ▶️", callback_data=f"stats_chat_page:{page+1}"))
+    
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+        reply_markup = InlineKeyboardMarkup(keyboard)
+    else:
+        reply_markup = None
+    
+    # Send or edit message based on context
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            text=stats_text,
+            reply_markup=reply_markup
+        )
+    else:
+        await update.message.reply_text(
+            stats_text,
+            reply_markup=reply_markup
+        )
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handle button clicks."""
@@ -230,7 +361,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # Get task
         task = task_service.get_task(task_id)
         if not task:
-            await query.edit_message_text(f"Task {task_id} not found.")
+            await query.edit_message_text("Task not found.")
             return
         
         # Show task details and status options
@@ -268,9 +399,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         success = task_service.update_task_status(task_id, new_status)
         
         if success:
-            await query.edit_message_text(f"Task {task_id} status updated to {new_status}.")
+            await query.edit_message_text(f"Task status updated to {new_status}.")
         else:
-            await query.edit_message_text(f"Failed to update task {task_id} status.")
+            await query.edit_message_text("Failed to update task status.")
     
     elif data.startswith("delete_task:"):
         # Extract task ID
@@ -280,40 +411,31 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         success = task_service.delete_task(task_id)
         
         if success:
-            await query.edit_message_text(f"Task {task_id} has been deleted.")
+            await query.edit_message_text("Task has been deleted.")
         else:
-            await query.edit_message_text(f"Failed to delete task {task_id}.")
+            await query.edit_message_text("Failed to delete task.")
     
     elif data == "cancel":
-        # Get user and chat
-        user = update.effective_user
-        chat = update.callback_query.message.chat
-        
-        # Get tasks for current week
-        tasks = task_service.get_user_tasks(user.id, chat.id)
-        
-        if not tasks:
-            await query.edit_message_text("You don't have any tasks for this week.")
-            return
-        
-        # Format tasks
-        tasks_text = "Your tasks for this week:\n\n"
-        for i, task in enumerate(tasks, 1):
-            status_emoji = "🆕" if task.status == config.TASK_STATUS['CREATED'] else "✅" if task.status == config.TASK_STATUS['COMPLETED'] else "❌"
-            tasks_text += f"{i}. {status_emoji} {task.description} (ID: {task.task_id})\n"
-        
-        # Create inline keyboard with buttons for each task
-        keyboard = []
-        for task in tasks:
-            task_text = f"{task.description[:30]}..." if len(task.description) > 30 else task.description
-            keyboard.append([InlineKeyboardButton(task_text, callback_data=f"select_task:{task.task_id}")])
-        
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(
-            tasks_text + "\nSelect a task to update its status:",
-            reply_markup=reply_markup
-        )
+        # Return to task list with pagination
+        await my_tasks(update, context)
+    
+    elif data.startswith("page:"):
+        # Handle pagination in my_tasks function
+        # Extract page number and store it in context
+        page = int(data.split(":")[1])
+        if not hasattr(context, 'user_data') or context.user_data is None:
+            context.user_data = {}
+        # Use dict.update() method to modify user_data
+        context.user_data.update({'task_page': page})
+        await my_tasks(update, context)
+    
+    elif data.startswith("history_page:"):
+        # Handle pagination in history function
+        await history(update, context)
+    
+    elif data.startswith("stats_chat_page:"):
+        # Handle pagination in stats_chat function
+        await stats_chat(update, context)
 
 async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Log the error and send a message to the user."""
@@ -334,28 +456,72 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             logger.error(f"Failed to send error message: {e}")
 
 async def history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Show user's historical weekly statistics."""
+    """Show user's historical weekly statistics with pagination."""
     user = update.effective_user
     chat = update.effective_chat
     
-    # Get weekly stats from database (limit to last 10 weeks)
-    weekly_stats = db_manager.get_user_stats_history_in_chat(user.id, chat.id, limit=10)
+    # Get weekly stats from database (get more for pagination)
+    weekly_stats = db_manager.get_user_stats_history_in_chat(user.id, chat.id, limit=50)
     
     if not weekly_stats:
         await update.message.reply_text("You don't have any historical statistics yet.")
         return
     
-    # Format statistics
-    history_text = "Your historical weekly statistics:\n\n"
+    # Get page number from context or use default
+    page = context.user_data.get('history_page', 1) if context.user_data else 1
     
-    for stat in weekly_stats:
+    # Handle page navigation from callback
+    if update.callback_query and update.callback_query.data.startswith("history_page:"):
+        page = int(update.callback_query.data.split(":")[1])
+        context.user_data['history_page'] = page
+        await update.callback_query.answer()
+    
+    # Calculate pagination
+    items_per_page = 3  # Show 3 weeks per page
+    total_pages = (len(weekly_stats) + items_per_page - 1) // items_per_page
+    page = max(1, min(page, total_pages))  # Ensure page is within valid range
+    
+    # Get stats for current page
+    start_idx = (page - 1) * items_per_page
+    end_idx = min(start_idx + items_per_page, len(weekly_stats))
+    current_page_stats = weekly_stats[start_idx:end_idx]
+    
+    # Format statistics
+    history_text = f"Your historical weekly statistics (Page {page}/{total_pages}):\n\n"
+    
+    for stat in current_page_stats:
         history_text += f"Week {stat.week_number}, {stat.year}:\n"
         history_text += f"  Total tasks: {stat.tasks_created}\n"
         history_text += f"  Completed: {stat.tasks_completed}\n"
         history_text += f"  Canceled: {stat.tasks_canceled}\n"
         history_text += f"  Completion rate: {stat.completion_rate * 100:.1f}%\n\n"
     
-    await update.message.reply_text(history_text)
+    # Create pagination navigation buttons
+    keyboard = []
+    nav_buttons = []
+    
+    if page > 1:
+        nav_buttons.append(InlineKeyboardButton("◀️ Previous", callback_data=f"history_page:{page-1}"))
+    if page < total_pages:
+        nav_buttons.append(InlineKeyboardButton("Next ▶️", callback_data=f"history_page:{page+1}"))
+    
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+        reply_markup = InlineKeyboardMarkup(keyboard)
+    else:
+        reply_markup = None
+    
+    # Send or edit message based on context
+    if update.callback_query:
+        await update.callback_query.edit_message_text(
+            text=history_text,
+            reply_markup=reply_markup
+        )
+    else:
+        await update.message.reply_text(
+            history_text,
+            reply_markup=reply_markup
+        )
 
 def main() -> None:
     """Start the bot."""
@@ -369,6 +535,7 @@ def main() -> None:
     application.add_handler(CommandHandler("my_tasks", my_tasks))
     application.add_handler(CommandHandler("update_task", update_task_status))
     application.add_handler(CommandHandler("stats", stats))
+    application.add_handler(CommandHandler("stats_chat", stats_chat))
     application.add_handler(CommandHandler("history", history))
 
     # Register callback query handler for inline buttons
@@ -380,14 +547,77 @@ def main() -> None:
     
     # Register error handler
     application.add_error_handler(error_handler)
+    
+    # Set up scheduler
+    scheduler.schedule_weekly_task_reset(statistics_service.reset_weekly_tasks)
+    scheduler.schedule_weekly_stats_generation(lambda: statistics_service.generate_weekly_stats_for_all_chats())
+    scheduler.start()
+    logger.info("Scheduler started")
+    
+    # Set up commands menu
+    from telegram import BotCommand, BotCommandScopeAllPrivateChats, BotCommandScopeAllGroupChats
+    
+    # Commands for all chats
+    common_commands = [
+        ("start", "Start the bot and register as a user"),
+        ("help", "Show help message"),
+        ("add_task", "Add a new task for the current week"),
+        ("add_task_conv", "Add a new task using conversation flow"),
+        ("my_tasks", "Show your tasks for the current week"),
+        ("update_task", "Update the status of a task"),
+        ("update_task_conv", "Update task status using conversation flow"),
+        ("stats", "Show your statistics for the current week"),
+        ("history", "Show your historical weekly statistics")
+    ]
+    
+    # Additional commands for group chats
+    group_commands = common_commands + [
+        ("stats_chat", "Show completion rates for all users in the chat")
+    ]
+    
+    # We'll set up commands when the bot starts
+    application.job_queue.run_once(
+        lambda context: context.application.create_task(async_setup_commands(context.application)),
+        when=0
+    )
+    
+    async def async_setup_commands(app):
+        # Set default commands for all chats
+        await app.bot.set_my_commands(
+            [BotCommand(command, description) for command, description in common_commands]
+        )
+        
+        # Set specific commands for private chats
+        await app.bot.set_my_commands(
+            [BotCommand(command, description) for command, description in common_commands],
+            scope=BotCommandScopeAllPrivateChats()
+        )
+        
+        # Set specific commands for group chats
+        await app.bot.set_my_commands(
+            [BotCommand(command, description) for command, description in group_commands],
+            scope=BotCommandScopeAllGroupChats()
+        )
+        
+        logger.info("Command menus set up for different chat types")
 
     # Start the Bot
     application.run_polling()
     logger.info("Bot started")
 
+def shutdown():
+    """Shutdown the bot and scheduler."""
+    if scheduler.scheduler.running:
+        scheduler.shutdown()
+        logger.info("Scheduler shutdown")
+
 if __name__ == '__main__':
     try:
         main()
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+        shutdown()
     except Exception as e:
         logger.error(f"Fatal error: {e}")
+        shutdown()
         sys.exit(1)

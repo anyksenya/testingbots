@@ -368,6 +368,21 @@ class DatabaseManager:
         finally:
             self._disconnect()
     
+    def get_all_active_chats(self) -> List[Chat]:
+        """Get all active chats."""
+        try:
+            self._connect()
+            self.cursor.execute(
+                "SELECT * FROM chats WHERE is_active = 1"
+            )
+            rows = self.cursor.fetchall()
+            return [Chat.from_row(tuple(row)) for row in rows]
+        except sqlite3.Error as e:
+            logger.error(f"Error getting all active chats: {e}")
+            return []
+        finally:
+            self._disconnect()
+    
     def get_chat_users(self, chat_id: int) -> List[User]:
         """Get all users in a chat."""
         try:
