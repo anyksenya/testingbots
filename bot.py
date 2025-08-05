@@ -145,10 +145,11 @@ async def my_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Handle page navigation from callback
     if update.callback_query and update.callback_query.data.startswith("page:"):
         page = int(update.callback_query.data.split(":")[1])
-        if not hasattr(context, 'user_data') or context.user_data is None:
-            context.user_data = {}
-        # Use dict.update() method to modify user_data
-        context.user_data.update({'task_page': page})
+        if context.user_data is not None:
+            # Use direct assignment for individual keys
+            context.user_data['task_page'] = page
+        else:
+            logger.warning("user_data is None, cannot store page number")
         await update.callback_query.answer()
     
     # Calculate pagination
@@ -285,7 +286,10 @@ async def stats_chat(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     # Handle page navigation from callback
     if update.callback_query and update.callback_query.data.startswith("stats_chat_page:"):
         page = int(update.callback_query.data.split(":")[1])
-        context.user_data['stats_chat_page'] = page
+        if context.user_data is not None:
+            context.user_data['stats_chat_page'] = page
+        else:
+            logger.warning("user_data is None, cannot store page number")
         await update.callback_query.answer()
     
     # Calculate pagination
@@ -423,10 +427,11 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         # Handle pagination in my_tasks function
         # Extract page number and store it in context
         page = int(data.split(":")[1])
-        if not hasattr(context, 'user_data') or context.user_data is None:
-            context.user_data = {}
-        # Use dict.update() method to modify user_data
-        context.user_data.update({'task_page': page})
+        if context.user_data is not None:
+            # Use direct assignment for individual keys
+            context.user_data['task_page'] = page
+        else:
+            logger.warning("user_data is None, cannot store page number")
         await my_tasks(update, context)
     
     elif data.startswith("history_page:"):
@@ -473,7 +478,10 @@ async def history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     # Handle page navigation from callback
     if update.callback_query and update.callback_query.data.startswith("history_page:"):
         page = int(update.callback_query.data.split(":")[1])
-        context.user_data['history_page'] = page
+        if context.user_data is not None:
+            context.user_data['history_page'] = page
+        else:
+            logger.warning("user_data is None, cannot store page number")
         await update.callback_query.answer()
     
     # Calculate pagination
