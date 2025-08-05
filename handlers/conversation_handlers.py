@@ -48,6 +48,8 @@ class ConversationHandlers:
             fallbacks=[CommandHandler("cancel", self.cancel_conversation)],
             name="add_task_conversation",
             persistent=False,
+            per_chat=False,
+            per_user=True,
         )
     
     def get_update_task_handler(self) -> ConversationHandler:
@@ -70,6 +72,8 @@ class ConversationHandlers:
             ],
             name="update_task_conversation",
             persistent=False,
+            per_chat=False,
+            per_user=True,
         )
     
     async def add_task_start(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -142,7 +146,7 @@ class ConversationHandlers:
         tasks_text = "Your tasks for this week:\n\n"
         for i, task in enumerate(tasks, 1):
             status_emoji = "🆕" if task.status == config.TASK_STATUS['CREATED'] else "✅" if task.status == config.TASK_STATUS['COMPLETED'] else "❌"
-            tasks_text += f"{i}. {status_emoji} {task.description} (ID: {task.task_id})\n"
+            tasks_text += f"{i}. {status_emoji} {task.description}\n"
         
         # Create inline keyboard with buttons for each task
         keyboard = []
@@ -170,7 +174,7 @@ class ConversationHandlers:
             # Get task
             task = self.task_service.get_task(task_id)
             if not task:
-                await update.message.reply_text(f"Task {task_id} not found. Please try again.")
+                await update.message.reply_text("Task not found. Please try again.")
                 return SELECTING_TASK
             
             # Show task details and status options
@@ -191,7 +195,7 @@ class ConversationHandlers:
         # Get task
         task = self.task_service.get_task(task_id)
         if not task:
-            await query.edit_message_text(f"Task {task_id} not found.")
+            await query.edit_message_text("Task not found.")
             return ConversationHandler.END
         
         # Show task details and status options
@@ -245,9 +249,9 @@ class ConversationHandlers:
         success = self.task_service.update_task_status(task_id, new_status)
         
         if success:
-            await query.edit_message_text(f"Task {task_id} status updated to {new_status}.")
+            await query.edit_message_text(f"Task status updated to {new_status}.")
         else:
-            await query.edit_message_text(f"Failed to update task {task_id} status.")
+            await query.edit_message_text("Failed to update task status.")
         
         return ConversationHandler.END
     
@@ -263,9 +267,9 @@ class ConversationHandlers:
         success = self.task_service.delete_task(task_id)
         
         if success:
-            await query.edit_message_text(f"Task {task_id} has been deleted.")
+            await query.edit_message_text("Task has been deleted.")
         else:
-            await query.edit_message_text(f"Failed to delete task {task_id}.")
+            await query.edit_message_text("Failed to delete task.")
         
         return ConversationHandler.END
     

@@ -283,7 +283,7 @@ class StatisticsService:
             stats_text = f"📊 Chat Completion Rates (Week {week_number}, {year}):\n\n"
             
             for user_id, username, completion_rate in completion_rates:
-                stats_text += f"{username} ({user_id}): {completion_rate * 100:.1f}%\n"
+                stats_text += f"{username}: {completion_rate * 100:.1f}%\n"
             
             return stats_text
         except Exception as e:
