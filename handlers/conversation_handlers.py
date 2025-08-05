@@ -42,6 +42,7 @@ class ConversationHandlers:
             entry_points=[CommandHandler("add_task_conv", self.add_task_start)],
             states={
                 TASK_DESCRIPTION: [
+                    # Accept any text message that's not a command
                     MessageHandler(filters.TEXT & ~filters.COMMAND, self.add_task_description)
                 ],
             },
@@ -51,6 +52,7 @@ class ConversationHandlers:
             per_chat=False,
             per_user=True,
             per_message=False,
+            allow_reentry=True,  # Allow users to restart the conversation
         )
     
     def get_update_task_handler(self) -> ConversationHandler:
@@ -95,12 +97,13 @@ class ConversationHandlers:
             return ConversationHandler.END
         
         # Store user and chat info in context for later use
-        if not context.user_data:
-            context.user_data = {}
-        context.user_data.update({
-            'active_chat_id': chat.id,
-            'active_conversation': 'add_task'
-        })
+        if context.user_data is None:
+            # Initialize user_data if it doesn't exist
+            logger.warning("user_data is None, cannot store context")
+        else:
+            # Use direct assignment for individual keys
+            context.user_data['active_chat_id'] = chat.id
+            context.user_data['active_conversation'] = 'add_task'
         
         logger.info(f"User data set: {context.user_data}")
         
@@ -123,8 +126,12 @@ class ConversationHandlers:
         # Get the active chat ID from context if available
         active_chat_id = context.user_data.get('active_chat_id', chat.id) if context.user_data else chat.id
         
+        logger.info(f"Creating task for user {user.id} in chat {active_chat_id} with description: {description}")
+        
         # Create task
         task_id = self.task_service.create_task(user.id, active_chat_id, description)
+        
+        logger.info(f"Task creation result: {task_id}")
         
         if task_id:
             # Check if user needs to create more tasks
@@ -158,12 +165,13 @@ class ConversationHandlers:
         logger.info(f"Starting update_task conversation for user {user.id} in chat {chat.id} (type: {chat.type})")
         
         # Store user and chat info in context for later use
-        if not context.user_data:
-            context.user_data = {}
-        context.user_data.update({
-            'active_chat_id': chat.id,
-            'active_conversation': 'update_task'
-        })
+        if context.user_data is None:
+            # Initialize user_data if it doesn't exist
+            logger.warning("user_data is None, cannot store context")
+        else:
+            # Use direct assignment for individual keys
+            context.user_data['active_chat_id'] = chat.id
+            context.user_data['active_conversation'] = 'update_task'
         
         logger.info(f"User data set: {context.user_data}")
         
@@ -324,9 +332,11 @@ class ConversationHandlers:
         logger.info(f"User data before cancellation: {context.user_data}")
         
         # Clear conversation state
-        if context.user_data:
-            context.user_data.pop('active_chat_id', None)
-            context.user_data.pop('active_conversation', None)
+        if context.user_data is not None:
+            if 'active_chat_id' in context.user_data:
+                del context.user_data['active_chat_id']
+            if 'active_conversation' in context.user_data:
+                del context.user_data['active_conversation']
         
         if update.callback_query:
             await update.callback_query.edit_message_text("Operation canceled.")

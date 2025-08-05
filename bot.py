@@ -10,7 +10,7 @@ import logging
 import sys
 import json
 import datetime
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 
 import config
@@ -460,6 +460,51 @@ async def error_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         except Exception as e:
             logger.error(f"Failed to send error message: {e}")
 
+async def handle_conversation_fallback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Handle messages that might be part of a conversation but weren't caught by the conversation handler."""
+    user = update.effective_user
+    chat = update.effective_chat
+    message_text = update.message.text
+    
+    logger.info(f"Fallback handler received message from user {user.id} in chat {chat.id}: {message_text}")
+    
+    # Check if user has active conversation data
+    if context.user_data and 'active_conversation' in context.user_data:
+        active_conversation = context.user_data.get('active_conversation')
+        active_chat_id = context.user_data.get('active_chat_id')
+        
+        logger.info(f"User {user.id} has active conversation: {active_conversation} in chat {active_chat_id}")
+        
+        # Handle add_task conversation
+        if active_conversation == 'add_task':
+            logger.info(f"Creating task via fallback handler for user {user.id} in chat {active_chat_id}")
+            
+            # Create task
+            task_id = task_service.create_task(user.id, active_chat_id, message_text)
+            
+            if task_id:
+                # Check if user needs to create more tasks
+                result = task_service.can_create_task(user.id, chat.id)
+                min_tasks_remaining = result.get('min_tasks_remaining', 0)
+                
+                if min_tasks_remaining > 0:
+                    await update.message.reply_text(
+                        f"Task created successfully! You need to create at least {min_tasks_remaining} more task(s) this week."
+                    )
+                else:
+                    await update.message.reply_text("Task created successfully!")
+                
+                # Clear conversation state
+                if 'active_chat_id' in context.user_data:
+                    del context.user_data['active_chat_id']
+                if 'active_conversation' in context.user_data:
+                    del context.user_data['active_conversation']
+                
+                return
+            else:
+                await update.message.reply_text("Failed to create task. Please try again later.")
+                return
+
 async def history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Show user's historical weekly statistics with pagination."""
     user = update.effective_user
@@ -552,6 +597,12 @@ def main() -> None:
     # Register conversation handlers
     application.add_handler(conversation_handlers.get_add_task_handler())
     application.add_handler(conversation_handlers.get_update_task_handler())
+    
+    # Add a fallback message handler for group chat conversations
+    application.add_handler(MessageHandler(
+        filters.TEXT & ~filters.COMMAND,
+        handle_conversation_fallback
+    ))
     
     # Register error handler
     application.add_error_handler(error_handler)
