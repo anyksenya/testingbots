@@ -11,8 +11,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
 # Copy only Python files and .env file
-COPY *.py .
-COPY .env .
+COPY *.py ./
+COPY .env ./
 COPY handlers/*.py ./handlers/
 COPY services/*.py ./services/
 COPY database/*.py ./database/
